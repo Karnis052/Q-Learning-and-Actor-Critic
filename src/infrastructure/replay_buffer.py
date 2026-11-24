@@ -2,11 +2,11 @@ import numpy as np
 
 class ReplayBuffer:
     def __init__(self, capacity=1000000):
-        self.max_size = capacity,
-        self.size = 0,
-        self.observations = None,
-        self.actions = None,
-        self.rewards = None,
+        self.max_size = capacity
+        self.size = 0
+        self.observations = None
+        self.actions = None
+        self.rewards = None
         self.next_observations = None
         self.dones = None
         
@@ -16,7 +16,7 @@ class ReplayBuffer:
             "observations": self.observations[rand_indices],
             "actions": self.actions[rand_indices],
             "rewards": self.rewards[rand_indices],
-            "next_observation": self.next_observations[rand_indices],
+            "next_observations": self.next_observations[rand_indices],
             "dones": self.dones[rand_indices]
         }
     def __len__(self):
@@ -45,8 +45,8 @@ class ReplayBuffer:
             self.observations = np.empty((self.max_size, *observation.shape), dtype=observation.dtype)
             self.actions = np.empty((self.max_size, *action.shape), dtype=action.dtype)
             self.rewards = np.empty((self.max_size, *reward.shape), dtype=reward.dtype)
-            self.next_observations = np.empty((self.max_size, *next_observation), dtype=next_observation.dtype)
-            self.done = np.empty((self.max_size, *done.shape), dtype=done.dtype)
+            self.next_observations = np.empty((self.max_size, *next_observation.shape), dtype=next_observation.dtype)
+            self.dones = np.empty((self.max_size, *done.shape), dtype=done.dtype)
             
         assert observation.shape == self.observations.shape[1:]
         assert action.shape == self.actions.shape[1:]
@@ -54,7 +54,7 @@ class ReplayBuffer:
         assert next_observation.shape == self.next_observations.shape[1:]
         assert done.shape == self.dones.shape[1:]
         
-        self.observations[self.size % self.max_size] = self.observation
+        self.observations[self.size % self.max_size] = observation
         self.actions[self.size % self.max_size] = action
         self.rewards[self.size %self.max_size] = reward
         self.next_observations[self.size % self.max_size] = next_observation
@@ -138,64 +138,10 @@ class MemoryEfficientReplayBuffer:
         Indices are into the observaion buffer, not the regular buffers.
         """
         return np.maximum(
-            np.arrage(-self.frame_history_len +1, 1) + latest_framebuffer_idx,
+            np.arange(-self.frame_history_len +1, 1) + latest_framebuffer_idx,
             trajectory_begin_framebuffer_idx,
         )
-    
 
-    def insert(
-        self,
-        /,
-        action: np.ndarray, 
-        reward: np.ndarray,
-        next_observation: np.ndarray,
-        done: np.ndarray,
-    ): 
-        """
-        Insert a single transition into the replay buffer
-        """
-        if isinstance(reward, (float, int)):
-            reward = np.array(reward)
-        if isinstance(done, bool):
-            done = np.array(done)
-        if isinstance(action, int):
-            action = np.array(action)
-            
-        
-        assert(
-            next_observation.ndim == 2
-        ), "Single-frame observation should have dimensions (H, W)"
-        assert next_observation.dtype == np.uint8, "Observation should be uint8 (0-255)"
-        
-        if self.actions is None:
-            self.actions = np.empty((self.max_size, *action.shape), dtype=action.dtype)
-            self.rewards = np.empty((self.max_size, *reward.shape), dtype=reward.dtype)
-            self.dones = np.empty((self.max_size, *done.shape), dtype=done.dtype)
-        
-        assert action.shape == self.actions.shape[1:]
-        assert reward.shape == ()
-        assert next_observation.shape == self.observation_shape
-        assert done.shape == ()
-        
-        self.observation_framebuffer_idcs[self.size%self.max_size] = self.recent_observation_framebuffer_idcs
-        self.actions[self.size % self.max_size] = action
-        self.rewards[self.size %self.max_size] = reward
-        self.dones[self.size % self.max_size] = done
-        
-        next_frame_idx = self._insert_frame(next_observation)
-        
-        next_framebuffer_idcs = self._compute_frame_history_idcs(
-            next_frame_idx, self.current_trajectory_framebuffer_begin
-        )    
-        
-        self.next_observation_framebuffer_idcs[
-            self.size % self.max_size
-        ]   = next_framebuffer_idcs
-        
-        self.size += 1
-        
-        self.recent_observation_framebuffer_idcs = next_framebuffer_idcs
-        
     
     def on_reset(
         self,
@@ -223,13 +169,13 @@ class MemoryEfficientReplayBuffer:
                 (self.max_size, self.frame_history_len), dtype=np.int64
             )
             self.framebuffer = np.empty(
-                (self.max_framebuffer_size, *observation.shape), dtype=observation.dtyoe
+                (self.max_framebuffer_size, *observation.shape), dtype=observation.dtype
             )
             self.framebuffer_idx = 0
             self.current_trajectory_begin = 0
             self.current_trajectory_framebuffer_begin = 0
 
-        self.current_trajectory_framebuffer_begin = self.size
+        self.current_trajectory_begin = self.size
         
         self.current_trajectory_framebuffer_begin = self._insert_frame(observation)
         self.recent_observation_framebuffer_idcs = self._compute_frame_history_idcs(
@@ -237,3 +183,55 @@ class MemoryEfficientReplayBuffer:
             self.current_trajectory_framebuffer_begin
         )
                 
+    def insert(
+        self,
+        /,
+        action: np.ndarray,
+        reward: np.ndarray,
+        next_observation: np.ndarray,
+        done: np.ndarray
+    ):
+        """
+        Insert a single transition into the replay buffer.
+
+        """
+        
+        if isinstance(reward, (float, int)):
+            reward = np.array(reward)
+        if isinstance(done, bool):
+            done = np.array(done)
+        if isinstance(action, int):
+            action = np.array(action, dtype=np.int64)
+            
+        assert (
+            next_observation.ndim == 2
+        ), "Single-frame observation should have dimensions (H, W)"
+        assert next_observation.dtype == np.uint8, "Observations should be uint8 (0-255)"
+        
+        if self.actions is None:
+            self.actions = np.empty((self.max_size, *action.shape), dtype=action.dtype)
+            self.rewards = np.empty((self.max_size, *reward.shape), dtype=reward.dtype)
+            self.dones = np.empty((self.max_size, *done.shape), dtype=done.dtype)
+            
+        assert action.shape == self.actions.shape[1:]
+        assert reward.shape == ()
+        assert next_observation.shape == self.observation_shape
+        assert done.shape == ()
+        
+        self.observation_framebuffer_idcs[self.size % self.max_size] = self.recent_observation_framebuffer_idcs
+        self.actions[self.size % self.max_size] = action
+        self.rewards[self.size % self.max_size] = reward
+        self.dones[self.size % self.max_size] = done 
+        
+        next_frame_idx = self._insert_frame(next_observation)
+        
+        next_framebuffer_idcs =  self._compute_frame_history_idcs(
+            next_frame_idx, self.current_trajectory_framebuffer_begin
+        )
+        self.next_observation_framebuffer_idcs[self.size % self.max_size] = next_framebuffer_idcs
+        self.size += 1
+        
+        #Set up the observation for the next step
+        self.recent_observation_framebuffer_idcs = next_framebuffer_idcs
+        
+        

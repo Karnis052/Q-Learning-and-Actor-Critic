@@ -8,12 +8,16 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "gym>=0.26.2",
+    "ale-py>=0.12.1",
     "gymnasium>=1.4.0",
+    "media>=0.1.6",
+    "modal>=1.6.4",
+    "moviepy>=1.0.3",
     "numpy>=2.5.4",
     "opencv-python>=5.0.0.93",
     "pillow>=12.3.0",
     "torch>=2.14.1",
+    "tqdm>=4.70.1",
     "wandb>=0.30.0",
 ]
 

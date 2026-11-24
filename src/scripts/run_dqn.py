@@ -3,14 +3,16 @@ import argparse
 import yaml
 import os
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 import tqdm
 from configs import dqn_config
-from infrastructure.log_utils import Logger, setup_wandb
+from infrastructure.log_utils import Logger, setup_wandb, dumb_log
 from infrastructure import pytorch_utils as ptu
 from agents.dqn_agent import DQNAgent
+from infrastructure.replay_buffer import ReplayBuffer, MemoryEfficientReplayBuffer
+from infrastructure import utils
 
 MAX_VIDEO = 2
 
@@ -23,7 +25,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     eval_env = config["make_env"](eval=True)
     render_env = config["make_env"](eval=True, render=True)
     exploration_schedule = config["exploration_schedule"]
-    discrete = isinstance(env.action_space, gym.space.Discrete)
+    discrete = isinstance(env.action_space, gym.spaces.Discrete)
     
     assert discrete, "DQN only supports discrete action space"
     
@@ -40,7 +42,7 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
     else:
         fps = 4
 
-    ep_len = env.spec.max_episode_steps
+    ep_len = env.spec.max_episode_steps or 27000
     
     observation = None
     
@@ -49,8 +51,141 @@ def run_training_loop(config: dict, logger: Logger, args: argparse.Namespace):
         stacked_frames = True
         frame_history_len = env.observation_space.shape[0]
         assert frame_history_len == 4, "Only support 4 stacked frames"
-        replay_buffer = Me
+        replay_buffer = MemoryEfficientReplayBuffer(frame_history_len, capacity=1000_000)
+    elif len(env.observation_space.shape) == 1:
+        stacked_frames = False
+        replay_buffer = ReplayBuffer()
+    else:
+        raise ValueError(
+            f"Unsupported observation space shape: {env.observation_space.shape}"
+        )
+    
+    def reset_env_training():
+        nonlocal observation
+        observation, _ = env.reset()
         
+        assert not isinstance(
+            observation, tuple
+        ), "env.reset() must return np.ndarray"
+        
+        if isinstance(replay_buffer, MemoryEfficientReplayBuffer):
+            replay_buffer.on_reset(observation=observation[-1, ...])
+    
+    reset_env_training()
+    
+    for step in tqdm.trange(config["total_steps"], dynamic_ncols=True):
+        epsilon = exploration_schedule.value(step)
+        
+        # Compute action
+        action = agent.get_action(observation, epsilon=epsilon)
+
+        
+        next_observation, reward, terminated, truncated, info = env.step(action)
+        next_observation = np.asarray(next_observation)
+        done = terminated or truncated
+        
+        if isinstance(replay_buffer, MemoryEfficientReplayBuffer):
+            # We're using the memory-efficient replay buffer,
+            # So we only insert next_observation (not observation)
+            replay_buffer.insert(
+                action=action,
+                reward=reward,
+                done=terminated,
+                next_observation=next_observation[-1, ...],
+            )
+        else:
+            # We're using the regular replay buffer
+            replay_buffer.insert(
+                observation=observation,
+                action=action,
+                reward=reward,
+                done=terminated,
+                next_observation=next_observation
+            )
+        #Handle episode termination 
+        
+        if done: 
+            reset_env_training()
+            
+            logger.log({
+                 "Train_EpisodeReturn": info["episode"]["r"],
+                 "Train_EpisodeLen": info["episode"]["l"],
+            }, step)
+        else:
+            observation = next_observation
+            
+        # Main DQN training loop
+        if step >= config["learning_starts"]:
+           #  Sample config["batch_size"] samples from the replay buffer
+           batch = replay_buffer.sample(config["batch_size"])
+           
+           batch = ptu.from_numpy(batch)
+           
+           # Train the agent
+           update_info = agent.update(
+                obs=batch["observations"],
+                action=batch["actions"],
+                reward=batch["rewards"],
+                next_obs=batch["next_observations"],
+                done=batch["dones"],
+                step=step
+            )
+            
+           #Logging code
+           update_info["epsilon"] = epsilon
+           update_info["lr"] = agent.lr_scheduler.get_last_lr()[0]
+           
+           if step % args.log_interval == 0:
+               if step % args.eval_interval != 0:
+                   logger.log(update_info, step)
+        
+        if step % args.eval_interval == 0:
+            # Evaluate 
+            trajectories = utils.sample_n_trajectories(
+                eval_env,
+                agent,
+                args.num_eval_trajectories,
+                ep_len
+            )
+
+            returns = [t["episode_statistics"]["r"] for t in trajectories]
+            ep_lens = [t["episode_statistics"]["l"] for t in trajectories]
+            
+            eval_metrics = {
+                "Eval_AverageReturn": np.mean(returns),
+                "Eval_StdReturn": np.std(returns),
+                "Eval_MaxReturn": np.max(returns),
+                "Eval_MinReturn": np.min(returns),
+                "Eval_AverageEpLen": np.mean(ep_lens),
+            }
+            
+            # Merge training metrics if available
+            if step >= config["learning_starts"]:
+                eval_metrics.update(update_info)
+            logger.log(eval_metrics, step)
+            
+            if args.num_render_trajectories > 0:
+                video_trajectories = utils.sample_n_trajectories(
+                    render_env, 
+                    agent,
+                    args.num_render_trajectories, 
+                    ep_len,
+                    render=True
+                )
+                
+                logger.log_paths_as_videos(
+                    video_trajectories,
+                    step, 
+                    fps=fps,
+                    max_videos_to_save=args.num_render_trajectories,
+                    video_title="eval_rollouts"
+                )
+            # Save checkpoint periodically
+            dumb_log(agent, logger, args, os.path.dirname(logger.path))
+    
+    dumb_log(agent, logger, args, os.path.dirname(logger.path))
+            
+            
     
     
     
